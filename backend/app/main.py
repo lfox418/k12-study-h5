@@ -5,6 +5,8 @@ FastAPI 主应用入口
 - 内置 APScheduler 每 6 小时自动增量同步题库/词库任务
 """
 from __future__ import annotations
+import httpx
+from fastapi.responses import Response
 
 from contextlib import asynccontextmanager
 import logging
