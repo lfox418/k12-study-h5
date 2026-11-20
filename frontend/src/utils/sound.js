@@ -70,14 +70,23 @@ export function playPenaltyTone() {
 }
 
 export function speakWord(text) {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
+  const clean = (text || '').trim()
+  if (!clean || typeof window === 'undefined') return
+
   try {
-    window.speechSynthesis.cancel()
-    const utter = new SpeechSynthesisUtterance(text)
-    utter.lang = 'en-US'
-    utter.rate = 0.92
-    window.speechSynthesis.speak(utter)
+    if (currentAudio) {
+      currentAudio.pause()
+      currentAudio = null
+    }
+    const url = `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(clean)}&type=2`
+    const audio = new Audio(url)
+    currentAudio = audio
+    const playPromise = audio.play()
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch(() => fallbackSpeechSynthesis(clean))
+    }
+    audio.onerror = () => fallbackSpeechSynthesis(clean)
   } catch {
-    // 忽略浏览器发音权限限制
+    fallbackSpeechSynthesis(clean)
   }
 }
