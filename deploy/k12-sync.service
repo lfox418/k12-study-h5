@@ -1,0 +1,17 @@
+[Unit]
+Description=K12 Study Content Incremental Sync Service (English & Math)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+WorkingDirectory=/opt/k12-study-h5/backend
+Environment="K12_DB_PATH=/opt/k12-study-h5/database/k12_study.db"
+# 可选：配置兼容 OpenAI 格式大模型 API 补全双语例句与课标释义
+# Environment="LLM_API_BASE=https://api.openai.com/v1"
+# Environment="LLM_API_KEY=sk-xxxx"
+# Environment="LLM_MODEL=gpt-4o-mini"
+ExecStart=/opt/k12-study-h5/backend/.venv/bin/python3 /opt/k12-study-h5/backend/scripts/sync_content.py --subject all --batch-size 12
+StandardOutput=journal
+StandardError=journal

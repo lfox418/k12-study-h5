@@ -1,0 +1,51 @@
+# ==============================================================================
+# K12 英语分级背词 + 初中数学每日三题 (.gitignore)
+# ==============================================================================
+
+# --- Python / FastAPI 后端 ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# --- SQLite 3 (WAL 模式运行时文件，保留 database/init_k12_study.sql) ---
+database/*.db
+database/*.db-wal
+database/*.db-shm
+*.sqlite
+*.sqlite3
+
+# --- Vue 3 / Vite 前端 ---
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# --- 环境变量与密钥 ---
+.env
+.env.*
+!.env.example
+
+# --- 日志、编辑器与系统临时文件 ---
+*.log
+logs/
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
