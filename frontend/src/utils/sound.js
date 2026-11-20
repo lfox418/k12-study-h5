@@ -1,11 +1,6 @@
-/**
- * Web Audio API 零依赖合成音效模块
- * - playSuccessChime: 清脆多音阶升级/通关音效
- * - playPenaltyTone: 轻快温和的扣分提示音
- * - speakWord: 浏览器原生 speechSynthesis 英语发音
- */
-
+cat > /data0/webroot/k12-study-h5/frontend/src/utils/sound.js <<'EOF'
 let audioCtx = null
+let currentAudio = null
 
 function getAudioContext() {
   if (typeof window === 'undefined') return null
@@ -25,8 +20,8 @@ export function playSuccessChime(isGrandPass = false) {
   if (!ctx) return
 
   const notes = isGrandPass
-    ? [523.25, 659.25, 783.99, 1046.5, 1318.5] // C5-E5-G5-C6-E6 华丽通关音阶
-    : [587.33, 739.99, 880.0] // D5-F#5-A5 清脆加分三和弦
+    ? [523.25, 659.25, 783.99, 1046.5, 1318.5]
+    : [587.33, 739.99, 880.0]
 
   const now = ctx.currentTime
   notes.forEach((freq, idx) => {
@@ -69,6 +64,19 @@ export function playPenaltyTone() {
   })
 }
 
+function fallbackSpeechSynthesis(text) {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
+  try {
+    window.speechSynthesis.cancel()
+    const utter = new SpeechSynthesisUtterance(text)
+    utter.lang = 'en-US'
+    utter.rate = 0.92
+    window.speechSynthesis.speak(utter)
+  } catch {
+    // 忽略浏览器发音权限限制
+  }
+}
+
 export function speakWord(text) {
   const clean = (text || '').trim()
   if (!clean || typeof window === 'undefined') return
@@ -84,14 +92,13 @@ export function speakWord(text) {
     currentAudio = audio
     const playPromise = audio.play()
     if (playPromise && typeof playPromise.catch === 'function') {
-      playPromise.catch((err) => {
-        console.warn('Audio play failed:', err)
-        alert(err.message)
-        fallbackSpeechSynthesis(clean)
-      })
+      playPromise.catch(() => fallbackSpeechSynthesis(clean))
     }
     audio.onerror = () => fallbackSpeechSynthesis(clean)
   } catch {
     fallbackSpeechSynthesis(clean)
   }
 }
+EOF
+
+cd /data0/webroot/k12-study-h5/frontend && VITE_API_BASE=/k12/api npm run build
