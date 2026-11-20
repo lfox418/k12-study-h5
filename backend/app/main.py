@@ -240,3 +240,20 @@ def get_sync_logs(referral_code: str = Depends(require_referral_code)):
             "SELECT id, job_type, added_count, skipped_count, status, detail, started_at, finished_at FROM sync_logs ORDER BY id DESC LIMIT 10"
         ).fetchall()
     return {"logs": [dict(r) for r in rows]}
+
+
+@app.get("/api/tts")
+def tts_audio(word: str = Query(..., min_length=1, max_length=60)):
+    """同源代理英文单词 MP3 发音，解决低版本安卓 WebView 跨域与 TTS 缺失问题"""
+    clean = word.strip()
+    url = f"https://dict.youdao.com/dictvoice?audio={clean}&type=2"
+    try:
+        r = httpx.get(url, timeout=8.0, follow_redirects=True)
+        r.raise_for_status()
+        return Response(
+            content=r.content,
+            media_type="audio/mpeg",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"TTS fetch failed: {exc}") from exc

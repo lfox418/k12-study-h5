@@ -78,12 +78,17 @@ export function speakWord(text) {
       currentAudio.pause()
       currentAudio = null
     }
-    const url = `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(clean)}&type=2`
+    const apiBase = import.meta.env.VITE_API_BASE || '/api'
+    const url = `${apiBase}/tts?word=${encodeURIComponent(clean)}`
     const audio = new Audio(url)
     currentAudio = audio
     const playPromise = audio.play()
     if (playPromise && typeof playPromise.catch === 'function') {
-      playPromise.catch(() => fallbackSpeechSynthesis(clean))
+      playPromise.catch((err) => {
+        console.warn('Audio play failed:', err)
+        alert(err.message)
+        fallbackSpeechSynthesis(clean)
+      })
     }
     audio.onerror = () => fallbackSpeechSynthesis(clean)
   } catch {
