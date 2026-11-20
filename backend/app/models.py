@@ -1,5 +1,5 @@
 """Pydantic 数据模型定义"""
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -32,7 +32,7 @@ class SubmitSessionRequest(BaseModel):
 
 class UserProfileResponse(BaseModel):
     referral_code: str
-    phone: str | None = None
+    phone: Optional[str] = None
     total_points: int
     today_english_passed: bool = False
     today_math_passed: bool = False

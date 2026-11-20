@@ -1,4 +1,3 @@
-cat > /data0/webroot/k12-study-h5/frontend/src/utils/sound.js <<'EOF'
 let audioCtx = null
 let currentAudio = null
 
@@ -92,13 +91,14 @@ export function speakWord(text) {
     currentAudio = audio
     const playPromise = audio.play()
     if (playPromise && typeof playPromise.catch === 'function') {
-      playPromise.catch(() => fallbackSpeechSynthesis(clean))
+      playPromise.catch((err) => {
+        console.warn('Audio play failed:', err)
+        fallbackSpeechSynthesis(clean)
+      })
     }
     audio.onerror = () => fallbackSpeechSynthesis(clean)
   } catch {
     fallbackSpeechSynthesis(clean)
   }
 }
-EOF
 
-cd /data0/webroot/k12-study-h5/frontend && VITE_API_BASE=/k12/api npm run build

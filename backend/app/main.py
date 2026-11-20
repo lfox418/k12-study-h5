@@ -5,6 +5,8 @@ FastAPI 主应用入口
 - 内置 APScheduler 每 6 小时自动增量同步题库/词库任务
 """
 from __future__ import annotations
+import httpx
+from fastapi.responses import Response
 
 from contextlib import asynccontextmanager
 import logging
@@ -243,17 +245,34 @@ def get_sync_logs(referral_code: str = Depends(require_referral_code)):
 
 
 @app.get("/api/tts")
-def tts_audio(word: str = Query(..., min_length=1, max_length=60)):
-    """同源代理英文单词 MP3 发音，解决低版本安卓 WebView 跨域与 TTS 缺失问题"""
-    clean = word.strip()
-    url = f"https://dict.youdao.com/dictvoice?audio={clean}&type=2"
-    try:
-        r = httpx.get(url, timeout=8.0, follow_redirects=True)
-        r.raise_for_status()
-        return Response(
-            content=r.content,
-            media_type="audio/mpeg",
-            headers={"Cache-Control": "public, max-age=86400"},
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"TTS fetch failed: {exc}") from exc
+def tts_audio(word: str = Query(..., min_length=1, max_length=500)):
+    """同源代理英文单词/例句 MP3：单词优先有道并自动兜底百度，长句直接走百度 TTS"""
+    clean = (
+        word.strip()
+        .replace("’", "'")
+        .replace("‘", "'")
+        .replace("“", """)
+        .replace("”", """)
+        .replace("—", " ")
+        .replace("–", " ")
+    )
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    candidates = []
+    if " " not in clean:
+        candidates.append(("https://dict.youdao.com/dictvoice", {"audio": clean, "type": 2}))
+    candidates.append(("https://fanyi.baidu.com/gettts", {"lan": "en", "text": clean, "spd": 3, "source": "web"}))
+
+    last_exc = None
+    for url, params in candidates:
+        try:
+            r = httpx.get(url, params=params, headers=headers, timeout=10.0, follow_redirects=True)
+            r.raise_for_status()
+            if len(r.content) > 100:
+                return Response(
+                    content=r.content,
+                    media_type="audio/mpeg",
+                    headers={"Cache-Control": "public, max-age=86400"},
+                )
+        except Exception as exc:
+            last_exc = exc
+    raise HTTPException(status_code=502, detail=f"TTS fetch failed: {last_exc}")

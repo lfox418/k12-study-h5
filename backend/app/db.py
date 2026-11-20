@@ -2,12 +2,12 @@
 from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
-from typing import Iterator
+from typing import Iterator, Optional
 
 from . import config
 
 
-def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
+def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """获取配置好 WAL / NORMAL / busy_timeout=5000 的 SQLite 连接"""
     target = db_path or config.DB_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -22,7 +22,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
 
 
 @contextmanager
-def db_session(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
+def db_session(db_path: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
     """事务上下文管理器：自动提交或异常回滚"""
     conn = get_connection(db_path)
     try:
@@ -35,7 +35,7 @@ def db_session(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def init_database(db_path: Path | None = None, sql_path: Path | None = None) -> None:
+def init_database(db_path: Optional[Path] = None, sql_path: Optional[Path] = None) -> None:
     """执行初始化 SQL（幂等：CREATE TABLE IF NOT EXISTS & INSERT OR IGNORE）"""
     target_db = db_path or config.DB_PATH
     target_sql = sql_path or config.INIT_SQL_PATH
