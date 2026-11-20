@@ -168,9 +168,132 @@ def _enrich_english_with_llm(word: str, fallback_meaning: str, examples: list[di
         logger.warning("LLM 补全单词 %s 失败，回退基础数据: %s", word, exc)
         return fallback_meaning, examples
 
+KYLEBING_JUNIOR_URL = (
+    "https://cdn.jsdelivr.net/gh/KyleBing/english-vocabulary@master/"
+    "full_line_jsonl/sentence/%E6%AD%A3%E5%BA%8F/%E5%88%9D%E4%B8%AD.jsonl"
+)
+
+
+def _fetch_open_k12_words() -> dict[str, list[dict[str, Any]]]:
+    """从开源 KyleBing/english-vocabulary 拉取初中词库并按词长/序号分配到各学段"""
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "primary": [], "grade_7": [], "grade_8": [], "grade_9": []
+    }
+    try:
+        import httpx
+
+        resp = httpx.get(KYLEBING_JUNIOR_URL, timeout=60.0, follow_redirects=True)
+        resp.raise_for_status()
+        lines = resp.text.splitlines()
+        stages = ("grade_7", "grade_8", "grade_9")
+        for idx, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            word = str(obj.get("word", "")).strip().lower()
+            if not word or " " in word or not word.isalpha():
+                continue
+
+            trans_parts = []
+            for t in obj.get("translations", [])[:3]:
+                pos = (t.get("type") or "").strip()
+                zh = (t.get("translation") or "").strip()
+                if zh:
+                    trans_parts.append(f"{pos}. {zh}" if pos else zh)
+            meaning = "；".join(trans_parts)
+            if not meaning:
+                continue
+
+            uk = (obj.get("uk") or obj.get("us") or "").strip()
+            phonetic = f"/{uk}/" if uk and not uk.startswith("/") else uk
+            examples = [
+                {"en": s.get("sentence", ""), "zh": s.get("translation", "")}
+                for s in obj.get("sentences", [])[:2]
+                if s.get("sentence")
+            ]
+
+            # 简单短词优先归入小学补充，其余轮流分配到初一/初二/初三
+            target_stage = "primary" if len(word) <= 5 and idx % 4 == 0 else stages[idx % 3]
+            buckets[target_stage].append({
+                "word": word,
+                "phonetic": phonetic,
+                "meaning": meaning,
+                "examples": examples,
+            })
+    except Exception as exc:
+        logger.warning("拉取开源 K12 词库失败，回退内置候选词: %s", exc)
+    return buckets
+
+
+def sync_english_words(batch_size: int = 30, use_remote_api: bool = True) -> dict[str, int]:
+    """英语四学段增量采集、补全与去重入库"""
+    added = 0
+    skipped = 0
+
+    remote_buckets = _fetch_open_k12_words() if use_remote_api else {}
+    # 合并开源词库与内置兜底词
+    merged_sources: dict[str, list[dict[str, Any]]] = {}
+    for stage in ("primary", "grade_7", "grade_8", "grade_9"):
+        merged_sources[stage] = list(FALLBACK_ENGLISH_CANDIDATES.get(stage, [])) + list(remote_buckets.get(stage, []))
+
+    with db.db_session() as conn:
+        existing = {
+            (r["grade_stage"], r["word"].lower())
+            for r in conn.execute("SELECT grade_stage, word FROM english_words").fetchall()
+        }
+
+        to_insert: list[tuple[str, str, str, str, str, str]] = []
+        for stage, candidates in merged_sources.items():
+            for item in candidates:
+                if len(to_insert) >= batch_size:
+                    break
+                word = item["word"].strip().lower()
+                if (stage, word) in existing:
+                    skipped += 1
+                    continue
+
+                phonetic = item.get("phonetic", "")
+                examples: list[dict[str, str]] = list(item.get("examples", []))
+                if use_remote_api and (not phonetic or not examples):
+                    api_ph, api_ex = _fetch_free_dictionary(word)
+                    phonetic = phonetic or api_ph
+                    examples = examples or api_ex
+
+                meaning, examples = _enrich_english_with_llm(word, item["meaning"], examples)
+                if not examples:
+                    examples = [{"en": f"Let's learn the word {word} today.", "zh": f"今天我们来学习单词 {word}。"}]
+
+                to_insert.append((
+                    stage, word, phonetic, meaning,
+                    json.dumps(examples, ensure_ascii=False),
+                    "open_k12_sync_6h",
+                ))
+                existing.add((stage, word))
+
+        if to_insert:
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO english_words (grade_stage, word, phonetic, meaning, examples, source)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                to_insert,
+            )
+            added = len(to_insert)
+
+        conn.execute(
+            """
+            INSERT INTO sync_logs (job_type, added_count, skipped_count, status, detail, finished_at)
+            VALUES ('english_sync', ?, ?, 'success', ?, datetime('now', 'localtime'))
+            """,
+            (added, skipped, f"新增 {added} 词，去重跳过 {skipped} 词"),
+        )
+
+    return {"added": added, "skipped": skipped}
+
+"""
 
 def sync_english_words(batch_size: int = 8, use_remote_api: bool = True) -> dict[str, int]:
-    """英语四学段增量采集、补全与去重入库"""
     added = 0
     skipped = 0
 
@@ -210,24 +333,20 @@ def sync_english_words(batch_size: int = 8, use_remote_api: bool = True) -> dict
 
         if to_insert:
             conn.executemany(
-                """
                 INSERT OR IGNORE INTO english_words (grade_stage, word, phonetic, meaning, examples, source)
                 VALUES (?, ?, ?, ?, ?, ?)
-                """,
                 to_insert,
             )
             added = len(to_insert)
 
         conn.execute(
-            """
             INSERT INTO sync_logs (job_type, added_count, skipped_count, status, detail, finished_at)
             VALUES ('english_sync', ?, ?, 'success', ?, datetime('now', 'localtime'))
-            """,
             (added, skipped, f"新增 {added} 词，去重跳过 {skipped} 词"),
         )
 
     return {"added": added, "skipped": skipped}
-
+"""
 
 def _fetch_remote_math_questions() -> list[dict[str, Any]]:
     """若配置了外部公开题库 JSON 源，则拉取并校验字段"""
