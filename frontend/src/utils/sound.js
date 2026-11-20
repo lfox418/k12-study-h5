@@ -86,7 +86,6 @@ export function speakWord(text) {
     if (playPromise && typeof playPromise.catch === 'function') {
       playPromise.catch((err) => {
         console.warn('Audio play failed:', err)
-        alert(err.message)
         fallbackSpeechSynthesis(clean)
       })
     }
