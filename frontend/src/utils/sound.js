@@ -1,5 +1,12 @@
+import { reactive } from 'vue'
+export const ttsState = reactive({
+  loadingText: '',
+  playingText: ''
+})
 let audioCtx = null
 let currentAudio = null
+
+
 
 function getAudioContext() {
   if (typeof window === 'undefined') return null
@@ -80,24 +87,52 @@ export function speakWord(text) {
   const clean = (text || '').trim()
   if (!clean || typeof window === 'undefined') return
 
+  // 正在加载中时直接忽略连续点击
+  if (ttsState.loadingText) return
+
   try {
     if (currentAudio) {
+      currentAudio.onended = null
+      currentAudio.onerror = null
       currentAudio.pause()
       currentAudio = null
     }
+
+    ttsState.loadingText = clean
+    ttsState.playingText = ''
+
     const apiBase = import.meta.env.VITE_API_BASE || '/api'
     const url = `${apiBase}/tts?word=${encodeURIComponent(clean)}`
     const audio = new Audio(url)
     currentAudio = audio
+
+    audio.onplaying = () => {
+      ttsState.loadingText = ''
+      ttsState.playingText = clean
+    }
+    audio.onended = () => {
+      ttsState.loadingText = ''
+      ttsState.playingText = ''
+    }
+    audio.onerror = () => {
+      ttsState.loadingText = ''
+      ttsState.playingText = ''
+      fallbackSpeechSynthesis(clean)
+    }
+
     const playPromise = audio.play()
     if (playPromise && typeof playPromise.catch === 'function') {
       playPromise.catch((err) => {
-        console.warn('Audio play failed:', err)
-        fallbackSpeechSynthesis(clean)
+        ttsState.loadingText = ''
+        ttsState.playingText = ''
+        if (err?.name !== 'AbortError') {
+          fallbackSpeechSynthesis(clean)
+        }
       })
     }
-    audio.onerror = () => fallbackSpeechSynthesis(clean)
   } catch {
+    ttsState.loadingText = ''
+    ttsState.playingText = ''
     fallbackSpeechSynthesis(clean)
   }
 }
