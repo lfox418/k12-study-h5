@@ -21,7 +21,7 @@
           title="朗读发音"
           @click="speakWord(wordItem.word)"
         >
-          🔊
+          {{ ttsState.loadingText === wordItem.word ? '⏳' : '🔊' }}
         </button>
       </div>
 
@@ -44,7 +44,7 @@
               class="shrink-0 text-indigo-600 text-sm px-1.5"
               @click="speakWord(ex.en)"
               >
-                {{ ttsState.loadingText === currentWord.word ? '⏳' : '🔊' }}
+                {{ ttsState.loadingText === ex.en ? '⏳' : '🔊' }}
             </button>
           </div>
           <p v-if="ex.zh" class="text-xs text-slate-500 mt-1">{{ ex.zh }}</p>

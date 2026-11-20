@@ -29,8 +29,8 @@
             type="button"
             class="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-2xl active:scale-95 transition"
             @click="speakWord(currentWord.word)"
-          >
-            🔊
+            >
+                {{ ttsState.loadingText === currentWord.word ? '⏳' : '🔊' }}
           </button>
         </div>
 
@@ -48,7 +48,9 @@
           >
             <div class="flex items-start justify-between gap-2">
               <p class="text-sm text-slate-800 leading-relaxed">{{ ex.en }}</p>
-              <button type="button" class="text-indigo-600 shrink-0" @click="speakWord(ex.en)">🔊</button>
+              <button type="button" class="text-indigo-600 shrink-0" @click="speakWord(ex.en)">
+                {{ ttsState.loadingText === ex.en ? '⏳' : '🔊' }}
+              </button>
             </div>
             <p v-if="ex.zh" class="text-xs text-slate-500 mt-1">{{ ex.zh }}</p>
           </div>
@@ -214,7 +216,8 @@ import { computed, reactive, ref } from 'vue'
 import { showConfirmDialog, showDialog, showToast } from 'vant'
 import { useStudyStore } from '../stores/studyStore'
 import StealthTimerBar from '../components/StealthTimerBar.vue'
-import { speakWord } from '../utils/sound'
+import { speakWord, ttsState } from '../utils/sound'
+
 
 const store = useStudyStore()
 const session = computed(() => store.activeSession)
