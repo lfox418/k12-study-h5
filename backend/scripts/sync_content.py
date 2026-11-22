@@ -27,7 +27,7 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app import config, db  # noqa: E402
+from app import config, db, engine  # noqa: E402
 
 logger = logging.getLogger("k12_sync")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -422,11 +422,13 @@ def sync_math_questions(use_remote_api: bool = True) -> dict[str, int]:
 
 
 def run_full_sync(batch_size: int = 8, use_remote_api: bool = True) -> dict[str, Any]:
-    """执行双科完整增量更新"""
+    """执行双科完整增量更新，并定期清理 10 分钟前未提交的无效学习记录"""
     db.init_database()
     en_res = sync_english_words(batch_size=batch_size, use_remote_api=use_remote_api)
     math_res = sync_math_questions(use_remote_api=use_remote_api)
-    return {"english": en_res, "math": math_res}
+    with db.db_session() as conn:
+        cleaned = engine.cleanup_invalid_study_sessions(conn)
+    return {"english": en_res, "math": math_res, "cleaned_invalid_sessions": cleaned}
 
 
 def main() -> None:

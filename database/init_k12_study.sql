@@ -14,12 +14,13 @@ PRAGMA foreign_keys = ON;
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
     referral_code   TEXT PRIMARY KEY,              -- 6位数字/字母推荐码（统一大写）
-    phone           TEXT DEFAULT NULL,             -- 11位中国大陆手机号（免验证码直绑）
-    total_points    INTEGER NOT NULL DEFAULT 0 CHECK (total_points >= 0),
+    nickname        TEXT DEFAULT NULL,             -- 全局唯一用户昵称（绑定后用于全局展示）
+    total_points    REAL NOT NULL DEFAULT 0.0 CHECK (total_points >= 0.0),
     is_active       INTEGER NOT NULL DEFAULT 1,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M', 'now', 'localtime')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M', 'now', 'localtime'))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_nickname_unique ON users(nickname) WHERE nickname IS NOT NULL;
 
 -- ----------------------------------------------------------------------------
 -- 2. 英语多学段分级基础词库表
@@ -112,17 +113,34 @@ CREATE TABLE IF NOT EXISTS study_sessions (
     first_wrong_ids TEXT NOT NULL DEFAULT '[]',    -- JSON array: 首次提交时答错的条目 ID（用于个人中心标红）
     latest_wrong_ids TEXT NOT NULL DEFAULT '[]',   -- JSON array: 最近一次提交答错的条目 ID
     attempt_count   INTEGER NOT NULL DEFAULT 0,    -- 本轮已提交校验次数（含错题重学）
+    submit_count    INTEGER NOT NULL DEFAULT 0,    -- 每次点击提交考核自增 +1（用于过滤/清理无效记录）
     status          TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'passed', 'expired')),
     started_at      INTEGER NOT NULL,              -- Unix 秒级时间戳
-    expires_at      INTEGER NOT NULL,              -- started_at + 1800 (严格 30 分钟)
+    expires_at      INTEGER NOT NULL,              -- 截止时间戳（受每日配额与单科上限约束）
     completed_at    INTEGER DEFAULT NULL,          -- 通关或作废时间戳
     duration_sec    INTEGER DEFAULT NULL,          -- 耗时（秒）
-    total_score_delta INTEGER NOT NULL DEFAULT 0,  -- 本轮累计净积分变动
+    total_score_delta REAL NOT NULL DEFAULT 0.0,   -- 本轮累计净积分变动（支持 0.5 精度）
     daily_bonus_awarded INTEGER NOT NULL DEFAULT 0,-- 本轮是否发放了每日+5分奖励
     created_date    TEXT NOT NULL,                 -- 自然日 YYYY-MM-DD
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M', 'now', 'localtime')),
     FOREIGN KEY (referral_code) REFERENCES users(referral_code) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user_sub ON study_sessions(referral_code, subject, started_at DESC);
+
+-- ----------------------------------------------------------------------------
+-- 6.1 每日时间配额账本表（只增不减，永久保留当日已用时长，绝不随批次清理回退）
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS daily_time_quotas (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id              TEXT NOT NULL,            -- 关联 users.referral_code
+    quota_date           TEXT NOT NULL,            -- YYYY-MM-DD
+    english_used_seconds INTEGER NOT NULL DEFAULT 0, -- 英语当日累计已用秒数（上限 1800）
+    math_used_seconds    INTEGER NOT NULL DEFAULT 0, -- 数学当日累计已用秒数（上限 600）
+    updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M', 'now', 'localtime')),
+    UNIQUE(user_id, quota_date),
+    FOREIGN KEY (user_id) REFERENCES users(referral_code) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_dtq_user_date ON daily_time_quotas(user_id, quota_date);
 
 -- ----------------------------------------------------------------------------
 -- 7. 每日通关 +5 分奖励防重表（每个自然日、每科目仅发放一次）
@@ -133,24 +151,24 @@ CREATE TABLE IF NOT EXISTS daily_pass_rewards (
     subject         TEXT NOT NULL CHECK (subject IN ('english', 'math')),
     reward_date     TEXT NOT NULL,                 -- YYYY-MM-DD
     session_id      TEXT NOT NULL,
-    points          INTEGER NOT NULL DEFAULT 5,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    points          REAL NOT NULL DEFAULT 5.0,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M', 'now', 'localtime')),
     UNIQUE(referral_code, subject, reward_date),
     FOREIGN KEY (referral_code) REFERENCES users(referral_code) ON DELETE CASCADE
 );
 
 -- ----------------------------------------------------------------------------
--- 8. 积分变动流水表（审计与可追溯）
+-- 8. 积分变动流水表（审计与可追溯，支持 0.5 小数精度）
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS point_ledger (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     referral_code   TEXT NOT NULL,
     session_id      TEXT DEFAULT NULL,
     subject         TEXT NOT NULL,
-    delta           INTEGER NOT NULL,
-    balance_after   INTEGER NOT NULL CHECK (balance_after >= 0),
+    delta           REAL NOT NULL,
+    balance_after   REAL NOT NULL CHECK (balance_after >= 0.0),
     reason          TEXT NOT NULL,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M', 'now', 'localtime')),
     FOREIGN KEY (referral_code) REFERENCES users(referral_code) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_ledger_user ON point_ledger(referral_code, id DESC);
@@ -172,11 +190,11 @@ CREATE TABLE IF NOT EXISTS sync_logs (
 -- ============================================================================
 -- 预制初始化数据：测试推荐码
 -- ============================================================================
-INSERT OR IGNORE INTO users (referral_code, phone, total_points) VALUES
-('K12001', '13800138000', 0),
-('K12002', NULL, 0),
-('STU888', NULL, 0),
-('VIP666', NULL, 0);
+INSERT OR IGNORE INTO users (referral_code, nickname, total_points) VALUES
+('K12001', '学习小达人', 0.0),
+('K12002', NULL, 0.0),
+('STU888', NULL, 0.0),
+('VIP666', NULL, 0.0);
 
 -- ============================================================================
 -- 预制初始化词库：英语四学段（每学段 12 词，共 48 词，开箱即满 10 词/轮）

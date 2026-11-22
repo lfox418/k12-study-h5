@@ -5,8 +5,8 @@
       :title="`数学每日三题 · ${gradeLabel}`"
       :expires-at="session.expires_at"
       :clock-offset="session.clockOffset || 0"
-      :hide-threshold="session.stealth_hide_threshold || 600"
-      :urgent-threshold="session.urgent_pulse_threshold || 120"
+      :hide-threshold="session.stealth_hide_threshold || 300"
+      :urgent-threshold="session.urgent_pulse_threshold || 60"
       :paused="phase === 'passed' || phase === 'expired'"
       @expired="handleExpired"
       @exit="confirmExit"
@@ -135,7 +135,7 @@
         <div class="text-5xl mb-3">🎯</div>
         <h2 class="text-2xl font-black text-slate-900">数学每日三题全对通关！</h2>
         <p class="text-xs text-slate-500 mt-2">
-          用时 {{ formatDuration(lastResult.duration_sec) }} · 当前总积分 {{ store.totalPoints }} 分
+          用时 {{ formatDurationMinutes(lastResult.duration_minutes, lastResult.duration_sec) }} · 当前总积分 {{ store.totalPoints }} 分
         </p>
         <div
           v-if="lastResult.daily_bonus > 0"
@@ -159,7 +159,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { showConfirmDialog, showDialog, showToast } from 'vant'
 import { useStudyStore } from '../stores/studyStore'
 import StealthTimerBar from '../components/StealthTimerBar.vue'
@@ -177,12 +177,14 @@ const answers = reactive({})
 const submitting = ref(false)
 const lastResult = ref(null)
 
+let heartbeatTimer = null
+let lastSyncTs = Math.floor(Date.now() / 1000)
+
 function extractOptionKey(opt) {
   return String(opt).trim().charAt(0).toUpperCase()
 }
 
 function formatOptionLatex(opt) {
-  // 若选项含 LaTeX 命令但未包 $，自动包裹便于 KaTeX 渲染
   const str = String(opt)
   if (str.includes('$')) return str
   if (/[\\^_]/.test(str)) {
@@ -193,9 +195,76 @@ function formatOptionLatex(opt) {
   return str
 }
 
+async function handleQuotaCircuitBreaker(message) {
+  if (phase.value === 'expired') return
+  phase.value = 'expired'
+  stopHeartbeat()
+  await showDialog({
+    title: '今日学习时长已达上限',
+    message: message || '今日数学或双科总学习时长已达上限，当前学习已终止，请明日再来。',
+    confirmButtonText: '返回大厅'
+  })
+  await store.refreshProfile()
+  store.clearActiveSession()
+}
+
+async function flushHeartbeat(useBeacon = false) {
+  if (!session.value || phase.value === 'passed' || phase.value === 'expired') return
+  const nowSec = Math.floor(Date.now() / 1000)
+  const delta = Math.max(0, nowSec - lastSyncTs)
+  if (delta <= 0) return
+  lastSyncTs = nowSec
+  if (useBeacon) {
+    store.sendQuotaBeacon('math', delta, session.value.session_id)
+    return
+  }
+  try {
+    await store.sendQuotaHeartbeat('math', delta, session.value.session_id)
+  } catch (err) {
+    if (err.status === 403) {
+      await handleQuotaCircuitBreaker(err.message)
+    }
+  }
+}
+
+function handleVisibilityOrUnload() {
+  if (document.visibilityState === 'hidden') {
+    flushHeartbeat(true)
+  } else {
+    lastSyncTs = Math.floor(Date.now() / 1000)
+  }
+}
+
+function handlePageHide() {
+  flushHeartbeat(true)
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+  }
+}
+
+onMounted(() => {
+  lastSyncTs = Math.floor(Date.now() / 1000)
+  heartbeatTimer = setInterval(() => flushHeartbeat(false), 10000)
+  document.addEventListener('visibilitychange', handleVisibilityOrUnload)
+  window.addEventListener('pagehide', handlePageHide)
+})
+
+onBeforeUnmount(() => {
+  stopHeartbeat()
+  document.removeEventListener('visibilitychange', handleVisibilityOrUnload)
+  window.removeEventListener('pagehide', handlePageHide)
+})
+
 async function submitAnswers() {
   submitting.value = true
   try {
+    await flushHeartbeat(false)
+    if (phase.value === 'expired') return
+
     const payload = questions.value.map((q) => ({
       question_id: q.id,
       user_input: answers[q.id] || ''
@@ -208,13 +277,14 @@ async function submitAnswers() {
       return
     }
 
-    const netDelta = (res.raw_score_delta ?? res.score_delta)
+    const netDelta = Number(res.raw_score_delta ?? res.score_delta)
     if (res.all_correct) {
       phase.value = 'passed'
+      stopHeartbeat()
       store.triggerEffect({
         type: 'bonus',
-        headline: `+${res.score_delta} 分！`,
-        subline: res.daily_bonus > 0 ? `每日通关奖励 +${res.daily_bonus} 分！` : '三题全对通关！'
+        headline: `+${Number(res.score_delta)} 分！`,
+        subline: res.daily_bonus > 0 ? `每日通关奖励 +${Number(res.daily_bonus)} 分！` : '三题全对通关！'
       })
     } else {
       phase.value = 'wrong'
@@ -233,7 +303,11 @@ async function submitAnswers() {
       }
     }
   } catch (err) {
-    showToast(err.message || '提交失败')
+    if (err.status === 403) {
+      await handleQuotaCircuitBreaker(err.message)
+    } else {
+      showToast(err.message || '提交失败')
+    }
   } finally {
     submitting.value = false
   }
@@ -250,6 +324,7 @@ function restartFullGroup() {
 async function handleExpired() {
   if (phase.value === 'expired') return
   phase.value = 'expired'
+  stopHeartbeat()
   try {
     await store.checkExpiry(session.value.session_id)
   } catch {
@@ -260,29 +335,33 @@ async function handleExpired() {
     message: '超时未完成，本次成绩作废。不发放通关积分，请重新开启新批次。',
     confirmButtonText: '返回大厅'
   })
+  await store.refreshProfile()
   store.clearActiveSession()
 }
 
 async function confirmExit() {
   if (phase.value === 'passed' || phase.value === 'expired') {
+    await store.refreshProfile()
     store.clearActiveSession()
     return
   }
   try {
     await showConfirmDialog({
       title: '确认返回大厅？',
-      message: '当前数学批次尚未通关，退出后需重新开启。'
+      message: '当前数学批次尚未通关，已消耗的学习时长将永久计入今日配额。'
     })
+    await flushHeartbeat(false)
+    stopHeartbeat()
+    await store.refreshProfile()
     store.clearActiveSession()
   } catch {
     // cancel
   }
 }
 
-function formatDuration(sec) {
-  if (!sec) return '0秒'
-  const m = Math.floor(sec / 60)
-  const s = sec % 60
-  return m > 0 ? `${m}分${s}秒` : `${s}秒`
+function formatDurationMinutes(mins, sec) {
+  if (mins !== null && mins !== undefined) return `${mins} 分钟`
+  if (!sec) return '0 分钟'
+  return `${Math.max(1, Math.floor(sec / 60))} 分钟`
 }
 </script>

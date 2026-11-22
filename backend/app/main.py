@@ -17,7 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import config, db, engine
 from .models import (
-    PhoneBindRequest,
+    NicknameBindRequest,
+    QuotaHeartbeatRequest,
     ReferralVerifyRequest,
     StartSessionRequest,
     SubmitSessionRequest,
@@ -101,17 +102,50 @@ def require_admin_code(referral_code: str = Depends(require_referral_code)) -> s
     return referral_code
 
 
-@app.get("/api/admin/daily-records")
-def admin_daily_records(
-    date: Optional[str] = Query(default=None, description="自然日 YYYY-MM-DD"),
+@app.get("/api/admin/learners")
+def admin_learners_summary(_admin: str = Depends(require_admin_code)):
+    """管理员查看所有学习人卡片及三级词库分学段掌握统计"""
+    with db.db_session() as conn:
+        return engine.get_admin_learners_summary(conn)
+
+
+@app.get("/api/admin/calendar")
+def admin_calendar(
+    month: Optional[str] = Query(default=None, description="月份 YYYY-MM"),
     user_code: Optional[str] = Query(default=None, description="筛选指定推荐码"),
     subject: Optional[str] = Query(default=None, description="english 或 math"),
     _admin: str = Depends(require_admin_code),
 ):
     with db.db_session() as conn:
+        try:
+            return engine.get_admin_calendar_month(
+                conn, month_str=month, target_code=user_code, subject=subject
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/daily-records")
+def admin_daily_records(
+    date: Optional[str] = Query(default=None, description="自然日 YYYY-MM-DD"),
+    user_code: Optional[str] = Query(default=None, description="筛选指定推荐码"),
+    subject: Optional[str] = Query(default=None, description="english 或 math"),
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    _admin: str = Depends(require_admin_code),
+):
+    with db.db_session() as conn:
         return engine.get_admin_daily_records(
-            conn, date_str=date, target_code=user_code, subject=subject
+            conn, date_str=date, target_code=user_code, subject=subject, limit=limit, offset=offset
         )
+
+
+@app.delete("/api/admin/sessions/cleanup")
+def admin_cleanup_invalid_sessions(_admin: str = Depends(require_admin_code)):
+    """管理员手动清理 10 分钟前未提交且未过期的无效学习记录（不回退 daily_time_quotas）"""
+    with db.db_session() as conn:
+        deleted_count = engine.cleanup_invalid_study_sessions(conn)
+    return {"ok": True, "deleted_count": deleted_count}
         
 
 # ============================================================================
@@ -156,20 +190,62 @@ def get_profile(referral_code: str = Depends(require_referral_code)):
         return engine.get_user_profile(conn, referral_code)
 
 
-@app.put("/api/user/phone")
-def update_phone(payload: PhoneBindRequest, referral_code: str = Depends(require_referral_code)):
-    """免验证码直绑 11 位中国大陆手机号"""
+@app.put("/api/user/nickname")
+def update_nickname(payload: NicknameBindRequest, referral_code: str = Depends(require_referral_code)):
+    """绑定/修改全局唯一昵称"""
     with db.db_session() as conn:
         try:
-            profile = engine.bind_user_phone(conn, referral_code, payload.phone)
+            profile = engine.bind_user_nickname(conn, referral_code, payload.nickname)
             return {"ok": True, "profile": profile}
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/api/user/point-ledger")
+def get_point_ledger(
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    referral_code: str = Depends(require_referral_code),
+):
+    """查询当前用户积分变动流水"""
+    with db.db_session() as conn:
+        return engine.get_user_point_ledger(conn, referral_code, limit=limit, offset=offset)
+
+
 # ============================================================================
 # 全科目共享学习引擎 API（英语 & 数学统一入口）
 # ============================================================================
+
+@app.get("/api/sessions/active")
+def get_active_session(referral_code: str = Depends(require_referral_code)):
+    """查询当前进行中且未超时的学习批次（用于页面刷新恢复）"""
+    with db.db_session() as conn:
+        return engine.get_active_study_session(conn, referral_code)
+
+
+@app.post("/api/quota/heartbeat")
+def quota_heartbeat(
+    payload: QuotaHeartbeatRequest,
+    x_referral_code: Optional[str] = Header(default=None, alias="X-Referral-Code"),
+):
+    """每 10 秒心跳或页面退出 sendBeacon 补发累计学习耗时"""
+    raw_code = x_referral_code or payload.referral_code
+    with db.db_session() as conn:
+        try:
+            referral_code = engine.ensure_valid_referral_code(conn, raw_code)
+        except PermissionError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        res = engine.record_quota_heartbeat(
+            conn,
+            referral_code=referral_code,
+            subject=payload.subject,
+            delta_seconds=payload.delta_seconds,
+            session_id=payload.session_id,
+        )
+        if res["quota_exceeded"]:
+            raise HTTPException(status_code=403, detail="今日该科目或总学习时长已达上限，当前学习已终止")
+        return res
+
 
 @app.post("/api/sessions/start")
 def start_session(payload: StartSessionRequest, referral_code: str = Depends(require_referral_code)):
@@ -181,6 +257,8 @@ def start_session(payload: StartSessionRequest, referral_code: str = Depends(req
                 subject=payload.subject,
                 stage_or_grade=payload.stage_or_grade,
             )
+        except engine.QuotaExceededError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -199,6 +277,8 @@ def submit_session(
                 session_id=session_id,
                 answers=payload.answers,
             )
+        except engine.QuotaExceededError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -219,19 +299,23 @@ def check_session_expiry(session_id: str, referral_code: str = Depends(require_r
 @app.get("/api/archive/english")
 def archive_english(
     grade_stage: Optional[str] = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     referral_code: str = Depends(require_referral_code),
 ):
     with db.db_session() as conn:
-        return engine.get_english_readonly_archive(conn, referral_code, grade_stage)
+        return engine.get_english_readonly_archive(conn, referral_code, grade_stage, limit=limit, offset=offset)
 
 
 @app.get("/api/archive/math")
 def archive_math(
     grade: Optional[str] = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     referral_code: str = Depends(require_referral_code),
 ):
     with db.db_session() as conn:
-        return engine.get_math_readonly_archive(conn, referral_code, grade)
+        return engine.get_math_readonly_archive(conn, referral_code, grade, limit=limit, offset=offset)
 
 
 @app.get("/api/sync/logs")
@@ -249,12 +333,12 @@ def tts_audio(word: str = Query(..., min_length=1, max_length=500)):
     """同源代理英文单词/例句 MP3：单词优先有道并自动兜底百度，长句直接走百度 TTS"""
     clean = (
         word.strip()
-        .replace("’", "'")
-        .replace("‘", "'")
-        .replace("“", """)
-        .replace("”", """)
-        .replace("—", " ")
-        .replace("–", " ")
+        .replace("\u2019", "'")
+        .replace("\u2018", "'")
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2014", " ")
+        .replace("\u2013", " ")
     )
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     candidates = []

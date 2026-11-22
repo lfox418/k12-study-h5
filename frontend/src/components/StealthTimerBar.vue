@@ -24,7 +24,7 @@
         <span>沉浸学习中</span>
       </div>
 
-      <!-- 最后 10 分钟（剩余 <= 10 分钟）：柔和滑出倒计时胶囊；最后 2 分钟红色呼吸脉冲 -->
+      <!-- 最后 10 分钟（英语）/ 5 分钟（数学）：柔和滑出分钟级倒计时胶囊；最后 2 分钟 / 1 分钟红色呼吸脉冲 -->
       <div
         v-else
         key="sprint"
@@ -34,7 +34,7 @@
           : 'bg-amber-100 text-amber-800 border border-amber-300'"
       >
         <span>⏱</span>
-        <span>剩余 {{ formattedTime }}</span>
+        <span>剩余 {{ remainingMinutes }} 分钟</span>
       </div>
     </transition>
   </div>
@@ -69,10 +69,9 @@ function tick() {
   }
 }
 
-const formattedTime = computed(() => {
-  const m = Math.floor(remaining.value / 60)
-  const s = remaining.value % 60
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+const remainingMinutes = computed(() => {
+  if (remaining.value <= 0) return 0
+  return Math.max(1, Math.ceil(remaining.value / 60))
 })
 
 onMounted(() => {

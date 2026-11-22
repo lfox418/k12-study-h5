@@ -45,6 +45,27 @@ def init_database(db_path: Optional[Path] = None, sql_path: Optional[Path] = Non
     sql_script = target_sql.read_text(encoding="utf-8")
     conn = get_connection(target_db)
     try:
+        # 兼容已有旧数据库：先检查并补齐新增列，再执行建表、索引与初始化 SQL
+        existing_tables = {
+            row["name"]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        if "users" in existing_tables:
+            user_cols = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+            if "nickname" not in user_cols:
+                conn.execute("ALTER TABLE users ADD COLUMN nickname TEXT DEFAULT NULL;")
+        if "study_sessions" in existing_tables:
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(study_sessions)").fetchall()}
+            if "submit_count" not in cols:
+                conn.execute("ALTER TABLE study_sessions ADD COLUMN submit_count INTEGER NOT NULL DEFAULT 0;")
+            if "created_at" not in cols:
+                conn.execute(
+                    "ALTER TABLE study_sessions ADD COLUMN created_at TEXT NOT NULL DEFAULT '';"
+                )
+                conn.execute(
+                    "UPDATE study_sessions SET created_at = strftime('%Y-%m-%d %H:%M', started_at, 'unixepoch', 'localtime') WHERE created_at = '';"
+                )
+
         conn.executescript(sql_script)
         # 重新确认 WAL 参数生效
         conn.execute("PRAGMA journal_mode=WAL;")

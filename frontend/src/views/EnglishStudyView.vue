@@ -109,15 +109,30 @@
             <span class="text-xs font-bold text-slate-400">#{{ idx + 1 }}</span>
             <span class="text-sm font-bold text-slate-800">{{ w.meaning }}</span>
           </div>
-          <input
-            v-model="inputs[w.id]"
-            type="text"
-            autocapitalize="off"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="请输入对应英文单词..."
-            class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:outline-none text-base font-semibold text-slate-900"
-          />
+          <div class="flex items-center gap-2">
+            <input
+              v-model="inputs[w.id]"
+              type="text"
+              autocapitalize="off"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="请输入对应英文单词..."
+              class="flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:outline-none text-base font-semibold text-slate-900"
+            />
+          </div>
+          <div class="mt-2 flex justify-end">
+            <button
+              type="button"
+              class="px-3 py-1.5 rounded-xl text-xs font-bold border transition flex items-center gap-1.5 active:scale-95"
+              :class="usedHints[w.id]
+                ? 'bg-amber-50 text-amber-700 border-amber-300'
+                : 'bg-indigo-50 text-indigo-600 border-indigo-200 hover:bg-indigo-100'"
+              @click="playAudioHint(w)"
+            >
+              <span>🔊</span>
+              <span>{{ usedHints[w.id] ? '已使用语音提示（答对得 0.5 分）' : '听发音提示（积分减半）' }}</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -188,7 +203,7 @@
         <div class="text-5xl mb-3">🏆</div>
         <h2 class="text-2xl font-black text-slate-900">英语 10 词全对通关！</h2>
         <p class="text-xs text-slate-500 mt-2">
-          用时 {{ formatDuration(lastResult.duration_sec) }} · 当前总积分 {{ store.totalPoints }} 分
+          用时 {{ formatDurationMinutes(lastResult.duration_minutes, lastResult.duration_sec) }} · 当前总积分 {{ store.totalPoints }} 分
         </p>
         <div
           v-if="lastResult.daily_bonus > 0"
@@ -212,7 +227,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { showConfirmDialog, showDialog, showToast } from 'vant'
 import { useStudyStore } from '../stores/studyStore'
 import StealthTimerBar from '../components/StealthTimerBar.vue'
@@ -234,10 +249,31 @@ const stageLabel = computed(() => stageMap[session.value?.stage_or_grade] || '')
 const phase = ref('memorize') // 'memorize' | 'review' | 'wrong' | 'passed' | 'expired'
 const currentIndex = ref(0)
 const inputs = reactive({})
+const usedHints = reactive({})
 const submitting = ref(false)
 const lastResult = ref(null)
 
+let heartbeatTimer = null
+let lastSyncTs = Math.floor(Date.now() / 1000)
+
 const currentWord = computed(() => words.value[currentIndex.value] || {})
+
+function playAudioHint(w) {
+  usedHints[w.id] = true
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    try {
+      window.speechSynthesis.cancel()
+      const utter = new SpeechSynthesisUtterance(w.word)
+      utter.lang = 'en-US'
+      utter.rate = 0.92
+      window.speechSynthesis.speak(utter)
+      return
+    } catch {
+      // 降级到后端 TTS
+    }
+  }
+  speakWord(w.word)
+}
 
 function nextWord() {
   if (currentIndex.value < words.value.length - 1) {
@@ -249,16 +285,85 @@ function nextWord() {
 function enterReview() {
   words.value.forEach((w) => {
     inputs[w.id] = ''
+    usedHints[w.id] = false
   })
   phase.value = 'review'
 }
 
+async function handleQuotaCircuitBreaker(message) {
+  if (phase.value === 'expired') return
+  phase.value = 'expired'
+  stopHeartbeat()
+  await showDialog({
+    title: '今日学习时长已达上限',
+    message: message || '今日英语或双科总学习时长已达上限，当前学习已终止，请明日再来。',
+    confirmButtonText: '返回大厅'
+  })
+  await store.refreshProfile()
+  store.clearActiveSession()
+}
+
+async function flushHeartbeat(useBeacon = false) {
+  if (!session.value || phase.value === 'passed' || phase.value === 'expired') return
+  const nowSec = Math.floor(Date.now() / 1000)
+  const delta = Math.max(0, nowSec - lastSyncTs)
+  if (delta <= 0) return
+  lastSyncTs = nowSec
+  if (useBeacon) {
+    store.sendQuotaBeacon('english', delta, session.value.session_id)
+    return
+  }
+  try {
+    await store.sendQuotaHeartbeat('english', delta, session.value.session_id)
+  } catch (err) {
+    if (err.status === 403) {
+      await handleQuotaCircuitBreaker(err.message)
+    }
+  }
+}
+
+function handleVisibilityOrUnload() {
+  if (document.visibilityState === 'hidden') {
+    flushHeartbeat(true)
+  } else {
+    lastSyncTs = Math.floor(Date.now() / 1000)
+  }
+}
+
+function handlePageHide() {
+  flushHeartbeat(true)
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+  }
+}
+
+onMounted(() => {
+  lastSyncTs = Math.floor(Date.now() / 1000)
+  heartbeatTimer = setInterval(() => flushHeartbeat(false), 10000)
+  document.addEventListener('visibilitychange', handleVisibilityOrUnload)
+  window.addEventListener('pagehide', handlePageHide)
+})
+
+onBeforeUnmount(() => {
+  stopHeartbeat()
+  document.removeEventListener('visibilitychange', handleVisibilityOrUnload)
+  window.removeEventListener('pagehide', handlePageHide)
+})
+
 async function submitReview() {
   submitting.value = true
   try {
+    await flushHeartbeat(false)
+    if (phase.value === 'expired') return
+
     const answers = words.value.map((w) => ({
       word_id: w.id,
-      user_input: inputs[w.id] || ''
+      user_answer: inputs[w.id] || '',
+      used_audio_hint: Boolean(usedHints[w.id])
     }))
     const res = await store.submitSession(session.value.session_id, answers)
     lastResult.value = res
@@ -268,13 +373,14 @@ async function submitReview() {
       return
     }
 
-    const netDelta = (res.raw_score_delta ?? res.score_delta)
+    const netDelta = Number(res.raw_score_delta ?? res.score_delta)
     if (res.all_correct) {
       phase.value = 'passed'
+      stopHeartbeat()
       store.triggerEffect({
         type: 'bonus',
-        headline: `+${res.score_delta} 分！`,
-        subline: res.daily_bonus > 0 ? `每日通关奖励 +${res.daily_bonus} 分！` : '本轮 10 词全对通关！'
+        headline: `+${Number(res.score_delta)} 分！`,
+        subline: res.daily_bonus > 0 ? `每日通关奖励 +${Number(res.daily_bonus)} 分！` : '本轮 10 词全对通关！'
       })
     } else {
       phase.value = 'wrong'
@@ -293,17 +399,22 @@ async function submitReview() {
       }
     }
   } catch (err) {
-    showToast(err.message || '提交失败')
+    if (err.status === 403) {
+      await handleQuotaCircuitBreaker(err.message)
+    } else {
+      showToast(err.message || '提交失败')
+    }
   } finally {
     submitting.value = false
   }
 }
 
 function restartFullGroup() {
-  // 全部重来，严格保持原 session 与原 expires_at 不重置
+  // 全部重来，严格保持原 session 与原 expires_at 不重置，同时重置语音提示标记
   currentIndex.value = 0
   words.value.forEach((w) => {
     inputs[w.id] = ''
+    usedHints[w.id] = false
   })
   phase.value = 'memorize'
 }
@@ -311,6 +422,7 @@ function restartFullGroup() {
 async function handleExpired() {
   if (phase.value === 'expired') return
   phase.value = 'expired'
+  stopHeartbeat()
   try {
     await store.checkExpiry(session.value.session_id)
   } catch {
@@ -321,29 +433,33 @@ async function handleExpired() {
     message: '超时未完成，本次成绩作废。不计入熟练度晋升、不发放通关积分，请重新开启新批次。',
     confirmButtonText: '返回大厅'
   })
+  await store.refreshProfile()
   store.clearActiveSession()
 }
 
 async function confirmExit() {
   if (phase.value === 'passed' || phase.value === 'expired') {
+    await store.refreshProfile()
     store.clearActiveSession()
     return
   }
   try {
     await showConfirmDialog({
       title: '确认返回大厅？',
-      message: '当前批次尚未通关，退出后需重新开启新批次。'
+      message: '当前批次尚未通关，已消耗的学习时长将永久计入今日配额。'
     })
+    await flushHeartbeat(false)
+    stopHeartbeat()
+    await store.refreshProfile()
     store.clearActiveSession()
   } catch {
     // 取消
   }
 }
 
-function formatDuration(sec) {
-  if (!sec) return '0秒'
-  const m = Math.floor(sec / 60)
-  const s = sec % 60
-  return m > 0 ? `${m}分${s}秒` : `${s}秒`
+function formatDurationMinutes(mins, sec) {
+  if (mins !== null && mins !== undefined) return `${mins} 分钟`
+  if (!sec) return '0 分钟'
+  return `${Math.max(1, Math.floor(sec / 60))} 分钟`
 }
 </script>

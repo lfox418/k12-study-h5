@@ -8,11 +8,21 @@ import api, {
 export const useStudyStore = defineStore('study', {
   state: () => ({
     referralCode: getStoredReferralCode(),
-    phone: null,
+    nickname: null,
     totalPoints: 0,
     isAdmin: false,
     todayEnglishPassed: false,
     todayMathPassed: false,
+    quota: {
+      english_used_minutes: 0,
+      english_remaining_minutes: 30,
+      math_used_minutes: 0,
+      math_remaining_minutes: 10,
+      total_used_minutes: 0,
+      total_remaining_minutes: 40,
+      english_locked: false,
+      math_locked: false
+    },
     isAuthenticated: false,
     activeTab: 'hall', // 'hall' | 'english' | 'math' | 'profile'
     activeSession: null, // 当前进行中的学习批次
@@ -26,18 +36,23 @@ export const useStudyStore = defineStore('study', {
     }
   }),
 
+  getters: {
+    displayName: (state) => state.nickname || state.referralCode
+  },
+
   actions: {
     async restoreSession() {
       const code = getStoredReferralCode()
       if (!code || code.length !== 6) {
         this.isAuthenticated = false
-        if (this.isAdmin) this.activeTab = 'admin'
         return false
       }
       try {
         const profile = await api.get('/user/profile')
         this.applyProfile(profile)
         this.isAuthenticated = true
+        this.activeSession = null
+        this.activeTab = 'hall'
         return true
       } catch {
         this.logout()
@@ -51,18 +66,39 @@ export const useStudyStore = defineStore('study', {
       setStoredReferralCode(res.profile.referral_code)
       this.applyProfile(res.profile)
       this.isAuthenticated = true
+      this.activeSession = null
       this.activeTab = 'hall'
       return res.profile
+    },
+
+    async restoreActiveSession() {
+      try {
+        const res = await api.get('/sessions/active')
+        const data = res?.active_session
+        if (data) {
+          const localNow = Math.floor(Date.now() / 1000)
+          data.clockOffset = (data.server_now || localNow) - localNow
+          this.activeSession = data
+          this.activeTab = data.subject
+          return data
+        }
+      } catch {
+        // 恢复失败不影响正常进入大厅
+      }
+      return null
     },
 
     applyProfile(profile) {
       if (!profile) return
       this.referralCode = profile.referral_code
-      this.phone = profile.phone || null
+      this.nickname = profile.nickname || null
       this.isAdmin = Boolean(profile.is_admin)
-      this.totalPoints = profile.total_points ?? 0
+      this.totalPoints = Number(profile.total_points ?? 0)
       this.todayEnglishPassed = Boolean(profile.today_english_passed)
       this.todayMathPassed = Boolean(profile.today_math_passed)
+      if (profile.quota) {
+        this.quota = profile.quota
+      }
     },
 
     async refreshProfile() {
@@ -71,8 +107,8 @@ export const useStudyStore = defineStore('study', {
       this.applyProfile(profile)
     },
 
-    async bindPhone(phone) {
-      const res = await api.put('/user/phone', { phone })
+    async bindNickname(nickname) {
+      const res = await api.put('/user/nickname', { nickname })
       this.applyProfile(res.profile)
       return res.profile
     },
@@ -106,6 +142,33 @@ export const useStudyStore = defineStore('study', {
       return api.post(`/sessions/${sessionId}/check-expiry`)
     },
 
+    async sendQuotaHeartbeat(subject, deltaSeconds, sessionId = null) {
+      if (!this.isAuthenticated || deltaSeconds <= 0) return null
+      const res = await api.post('/quota/heartbeat', {
+        subject,
+        delta_seconds: Math.round(deltaSeconds),
+        session_id: sessionId
+      })
+      if (res?.quota) {
+        this.quota = res.quota
+      }
+      return res
+    },
+
+    sendQuotaBeacon(subject, deltaSeconds, sessionId = null) {
+      if (!this.isAuthenticated || !this.referralCode || deltaSeconds <= 0) return
+      if (typeof navigator === 'undefined' || !navigator.sendBeacon) return
+      const apiBase = import.meta.env.VITE_API_BASE || '/api'
+      const payload = JSON.stringify({
+        subject,
+        delta_seconds: Math.round(deltaSeconds),
+        session_id: sessionId,
+        referral_code: this.referralCode
+      })
+      const blob = new Blob([payload], { type: 'application/json' })
+      navigator.sendBeacon(`${apiBase}/quota/heartbeat`, blob)
+    },
+
     clearActiveSession() {
       this.activeSession = null
       this.activeTab = 'hall'
@@ -130,7 +193,7 @@ export const useStudyStore = defineStore('study', {
     logout() {
       clearStoredReferralCode()
       this.referralCode = ''
-      this.phone = null
+      this.nickname = null
       this.isAdmin = false
       this.totalPoints = 0
       this.todayEnglishPassed = false

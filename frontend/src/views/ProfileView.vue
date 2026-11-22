@@ -4,9 +4,11 @@
     <section class="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
       <div class="flex items-center justify-between">
         <div>
-          <div class="text-xs text-slate-400">专属推荐码档案</div>
-          <div class="text-2xl font-black tracking-widest text-indigo-600 mt-0.5">
-            {{ store.referralCode }}
+          <div class="text-xs text-slate-400">
+            {{ store.nickname ? `推荐码：${store.referralCode}` : '专属推荐码档案' }}
+          </div>
+          <div class="text-2xl font-black tracking-wide text-indigo-600 mt-0.5">
+            {{ store.displayName }}
           </div>
         </div>
         <div class="text-right">
@@ -17,14 +19,14 @@
 
       <div class="mt-4 pt-4 border-t border-slate-100">
         <label class="block text-xs font-semibold text-slate-600 mb-2">
-          绑定/修改手机号（内部自用，免短信验证码）
+          绑定/修改昵称（全局唯一，绑定后用于全局展示）
         </label>
         <div class="flex gap-2">
           <input
-            v-model="phoneInput"
-            type="tel"
-            maxlength="11"
-            placeholder="请输入 11 位中国大陆手机号"
+            v-model="nicknameInput"
+            type="text"
+            maxlength="20"
+            placeholder="请输入 2~20 位唯一昵称（中英文、数字、_-）"
             class="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:outline-none text-sm font-medium"
           />
           <van-button
@@ -33,8 +35,8 @@
             color="#4f46e5"
             size="small"
             class="px-5 font-bold"
-            :loading="savingPhone"
-            @click="savePhone"
+            :loading="savingNickname"
+            @click="saveNickname"
           >
             保存
           </van-button>
@@ -57,7 +59,83 @@
       <van-tabs v-model:active="activeArchiveTab" color="#4f46e5" background="transparent" animated>
         <!-- 英语只读档案 -->
         <van-tab title="英语词库与历史" name="english">
-          <div class="mt-3 flex gap-1.5 overflow-x-auto pb-1">
+          <!-- 外层：三张词库等级卡片垂直堆叠（默认全折叠 + 全局唯一展开互斥） -->
+          <div class="mt-3 space-y-2.5">
+            <div class="text-xs font-bold text-slate-500 px-1">
+              分级词库清单（点击单词查看只读卡片 · 严禁测试与计分）
+            </div>
+            <div
+              v-for="tier in tierConfigs"
+              :key="tier.key"
+              class="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden"
+            >
+              <!-- 外层卡片头部 -->
+              <button
+                type="button"
+                class="w-full px-4 py-3.5 flex items-center justify-between text-left transition active:bg-slate-50"
+                @click="toggleLevelCard(tier.key)"
+              >
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-black" :class="tier.textClass">{{ tier.title }}</span>
+                  <span class="text-[11px] font-bold px-2 py-0.5 rounded-full" :class="tier.badgeClass">
+                    共 {{ (enArchive.tiers[tier.key] || []).length }} 词
+                  </span>
+                </div>
+                <span class="text-xs text-slate-400 font-bold">
+                  {{ activeLevelCard === tier.key ? '收起 ▲' : '展开 ▼' }}
+                </span>
+              </button>
+
+              <!-- 内层：4 个学段折叠抽屉 -->
+              <div v-if="activeLevelCard === tier.key" class="px-3 pb-3 pt-1 space-y-2 border-t border-slate-100 bg-slate-50/50">
+                <div
+                  v-for="stage in englishStageDrawers"
+                  :key="`${tier.key}-${stage.value}`"
+                  class="bg-white rounded-2xl border border-slate-200/80 overflow-hidden"
+                >
+                  <button
+                    type="button"
+                    class="w-full px-3.5 py-2.5 flex items-center justify-between text-left text-xs font-bold text-slate-700"
+                    @click="toggleStageDrawer(tier.key, stage.value)"
+                  >
+                    <span>{{ stage.label }}</span>
+                    <div class="flex items-center gap-2">
+                      <span class="text-[11px] text-slate-500 font-semibold">
+                        {{ getStageWords(tier.key, stage.value).length }} 词
+                      </span>
+                      <span class="text-[10px] text-slate-400">
+                        {{ activeDrawerKey === `${tier.key}-${stage.value}` ? '▲' : '▼' }}
+                      </span>
+                    </div>
+                  </button>
+
+                  <div
+                    v-if="activeDrawerKey === `${tier.key}-${stage.value}`"
+                    class="px-3.5 pb-3 pt-2 border-t border-slate-100 flex flex-wrap gap-1.5"
+                  >
+                    <button
+                      v-for="w in getStageWords(tier.key, stage.value)"
+                      :key="w.id"
+                      type="button"
+                      class="px-2.5 py-1 rounded-lg text-xs font-semibold border transition active:scale-95"
+                      :class="tier.chipClass"
+                      @click="openReadonlyWord(w)"
+                    >
+                      {{ w.word }}
+                    </button>
+                    <span
+                      v-if="!getStageWords(tier.key, stage.value).length"
+                      class="text-xs text-slate-400"
+                    >
+                      该学段暂无单词
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-4 flex gap-1.5 overflow-x-auto pb-1">
             <button
               v-for="s in enStageFilters"
               :key="s.value"
@@ -70,33 +148,7 @@
             </button>
           </div>
 
-          <!-- 一/二/三级词库只读清单 -->
-          <div class="mt-3 bg-white rounded-3xl p-4 shadow-sm border border-slate-100">
-            <div class="text-xs font-bold text-slate-500 mb-3">
-              三阶动态词库清单（点击单词查看只读卡片 · 严禁测试与计分）
-            </div>
-            <div v-for="tier in tierConfigs" :key="tier.key" class="mb-3 last:mb-0">
-              <div class="flex items-center justify-between text-xs font-bold mb-1.5" :class="tier.textClass">
-                <span>{{ tier.title }}</span>
-                <span>{{ (enArchive.tiers[tier.key] || []).length }} 词</span>
-              </div>
-              <div class="flex flex-wrap gap-1.5">
-                <button
-                  v-for="w in enArchive.tiers[tier.key] || []"
-                  :key="w.id"
-                  type="button"
-                  class="px-2.5 py-1 rounded-lg text-xs font-semibold border transition active:scale-95"
-                  :class="tier.chipClass"
-                  @click="openReadonlyWord(w)"
-                >
-                  {{ w.word }}
-                </button>
-                <span v-if="!(enArchive.tiers[tier.key] || []).length" class="text-xs text-slate-400">暂无单词</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- 英语历史批次（含耗时、首次错词标红） -->
+          <!-- 英语历史批次（含耗时分钟、首次错词标红） -->
           <div class="mt-3 space-y-3">
             <div
               v-for="h in enArchive.history"
@@ -104,7 +156,7 @@
               class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100"
             >
               <div class="flex items-center justify-between text-xs">
-                <span class="font-bold text-slate-700">{{ h.created_date }} · {{ stageLabel(h.grade_stage) }}</span>
+                <span class="font-bold text-slate-700">{{ h.started_at_str || h.created_date }} · {{ stageLabel(h.grade_stage) }}</span>
                 <span
                   class="px-2 py-0.5 rounded-full font-bold"
                   :class="statusBadge(h.status)"
@@ -113,7 +165,7 @@
                 </span>
               </div>
               <div class="text-[11px] text-slate-400 mt-1">
-                耗时：{{ h.duration_sec ? `${h.duration_sec}秒` : '未完成' }} · 提交 {{ h.attempt_count }} 次 · 净积分 {{ h.total_score_delta >= 0 ? '+' : '' }}{{ h.total_score_delta }}
+                耗时：{{ formatDurationMinutes(h.duration_minutes) }} · 提交 {{ h.attempt_count }} 次 · 净积分 {{ h.total_score_delta >= 0 ? '+' : '' }}{{ h.total_score_delta }}
               </div>
               <div class="mt-2.5 flex flex-wrap gap-1.5">
                 <button
@@ -133,6 +185,17 @@
             <div v-if="!enArchive.history.length" class="text-center text-xs text-slate-400 py-6">
               暂无英语学习历史批次
             </div>
+            <van-button
+              v-if="enArchive.hasMore"
+              block
+              plain
+              round
+              size="small"
+              color="#4f46e5"
+              @click="loadEnglishArchive(true)"
+            >
+              加载更多历史
+            </van-button>
           </div>
         </van-tab>
 
@@ -183,13 +246,13 @@
               class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100"
             >
               <div class="flex items-center justify-between text-xs">
-                <span class="font-bold text-slate-700">{{ h.created_date }} · {{ stageLabel(h.grade) }}</span>
+                <span class="font-bold text-slate-700">{{ h.started_at_str || h.created_date }} · {{ stageLabel(h.grade) }}</span>
                 <span class="px-2 py-0.5 rounded-full font-bold" :class="statusBadge(h.status)">
                   {{ statusText(h.status) }}
                 </span>
               </div>
               <div class="text-[11px] text-slate-400 mt-1">
-                耗时：{{ h.duration_sec ? `${h.duration_sec}秒` : '未完成' }} · 净积分 {{ h.total_score_delta >= 0 ? '+' : '' }}{{ h.total_score_delta }}
+                耗时：{{ formatDurationMinutes(h.duration_minutes) }} · 净积分 {{ h.total_score_delta >= 0 ? '+' : '' }}{{ h.total_score_delta }}
               </div>
               <div class="mt-2.5 space-y-1.5">
                 <button
@@ -205,6 +268,58 @@
                 </button>
               </div>
             </div>
+                <div v-if="!mathArchive.history.length" class="text-center text-xs text-slate-400 py-6">
+              暂无数学学习历史批次
+            </div>
+            <van-button
+              v-if="mathArchive.hasMore"
+              block
+              plain
+              round
+              size="small"
+              color="#0d9488"
+              @click="loadMathArchive(true)"
+            >
+              加载更多历史
+            </van-button>
+          </div>
+        </van-tab>
+
+        <!-- 积分流水明细 -->
+        <van-tab title="积分明细" name="ledger">
+          <div class="mt-3 space-y-2.5">
+            <div
+              v-for="item in ledgerState.items"
+              :key="item.id"
+              class="bg-white rounded-2xl p-3.5 shadow-sm border border-slate-100 flex items-center justify-between gap-3"
+            >
+              <div class="min-w-0">
+                <div class="text-xs font-bold text-slate-800 truncate">{{ item.reason }}</div>
+                <div class="text-[11px] text-slate-400 mt-0.5">
+                  {{ item.created_at }} · 余额 {{ item.balance_after }} 分
+                </div>
+              </div>
+              <div
+                class="text-sm font-black shrink-0 tabular-nums"
+                :class="item.delta >= 0 ? 'text-emerald-600' : 'text-rose-600'"
+              >
+                {{ item.delta >= 0 ? '+' : '' }}{{ item.delta }}
+              </div>
+            </div>
+            <div v-if="!ledgerState.items.length" class="text-center text-xs text-slate-400 py-6">
+              暂无积分变动记录
+            </div>
+            <van-button
+              v-if="ledgerState.hasMore"
+              block
+              plain
+              round
+              size="small"
+              color="#4f46e5"
+              @click="loadPointLedger(true)"
+            >
+              加载更多明细
+            </van-button>
           </div>
         </van-tab>
       </van-tabs>
@@ -252,8 +367,8 @@ import WordDetailModal from '../components/WordDetailModal.vue'
 import MathText from '../components/MathText.vue'
 
 const store = useStudyStore()
-const phoneInput = ref(store.phone || '')
-const savingPhone = ref(false)
+const nicknameInput = ref(store.nickname || '')
+const savingNickname = ref(false)
 const activeArchiveTab = ref('english')
 
 const enFilter = ref('')
@@ -275,13 +390,72 @@ const mathGradeFilters = [
 ]
 
 const tierConfigs = [
-  { key: 'level_3', title: '三级熟练词库', textClass: 'text-emerald-700', chipClass: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-  { key: 'level_2', title: '二级巩固词库', textClass: 'text-amber-700', chipClass: 'bg-amber-50 text-amber-800 border-amber-200' },
-  { key: 'level_1', title: '一级新词词库', textClass: 'text-slate-600', chipClass: 'bg-slate-50 text-slate-700 border-slate-200' }
+  {
+    key: 'level_1',
+    title: '一级词库（生词本）',
+    textClass: 'text-slate-700',
+    badgeClass: 'bg-slate-100 text-slate-600',
+    chipClass: 'bg-slate-50 text-slate-700 border-slate-200'
+  },
+  {
+    key: 'level_2',
+    title: '二级词库（巩固中）',
+    textClass: 'text-amber-700',
+    badgeClass: 'bg-amber-100 text-amber-800',
+    chipClass: 'bg-amber-50 text-amber-800 border-amber-200'
+  },
+  {
+    key: 'level_3',
+    title: '三级词库（已掌握）',
+    textClass: 'text-emerald-700',
+    badgeClass: 'bg-emerald-100 text-emerald-700',
+    chipClass: 'bg-emerald-50 text-emerald-700 border-emerald-200'
+  }
 ]
 
-const enArchive = reactive({ history: [], tiers: { level_1: [], level_2: [], level_3: [] } })
-const mathArchive = reactive({ history: [], wrong_book: [] })
+const englishStageDrawers = [
+  { value: 'primary', label: '小学核心词（primary）' },
+  { value: 'grade_7', label: '初一核心词（grade_7）' },
+  { value: 'grade_8', label: '初二核心词（grade_8）' },
+  { value: 'grade_9', label: '初三核心词（grade_9）' }
+]
+
+const activeLevelCard = ref(null)
+const activeDrawerKey = ref(null)
+
+function toggleLevelCard(levelKey) {
+  if (activeLevelCard.value === levelKey) {
+    activeLevelCard.value = null
+    activeDrawerKey.value = null
+  } else {
+    activeLevelCard.value = levelKey
+    activeDrawerKey.value = null
+  }
+}
+
+function toggleStageDrawer(levelKey, stageValue) {
+  const key = `${levelKey}-${stageValue}`
+  if (activeDrawerKey.value === key) {
+    activeDrawerKey.value = null
+  } else {
+    activeLevelCard.value = levelKey
+    activeDrawerKey.value = key
+  }
+}
+
+function getStageWords(levelKey, stageValue) {
+  const list = enArchive.tiers[levelKey] || []
+  return list.filter((w) => w.grade_stage === stageValue)
+}
+
+function formatDurationMinutes(mins) {
+  if (mins === null || mins === undefined) return '未完成'
+  return `${mins} 分钟`
+}
+
+const enArchive = reactive({ history: [], hasMore: false, tiers: { level_1: [], level_2: [], level_3: [] } })
+const mathArchive = reactive({ history: [], hasMore: false, wrong_book: [] })
+const ledgerState = reactive({ items: [], hasMore: false })
 
 const wordModalOpen = ref(false)
 const activeWord = ref(null)
@@ -298,35 +472,55 @@ function openReadonlyMath(q) {
   mathModalOpen.value = true
 }
 
-async function savePhone() {
-  const cleaned = phoneInput.value.trim()
-  if (!/^1[3-9]\d{9}$/.test(cleaned)) {
-    showToast('请输入有效的 11 位中国大陆手机号')
+async function saveNickname() {
+  const cleaned = nicknameInput.value.trim()
+  if (!/^[\u4e00-\u9fa5A-Za-z0-9_-]{2,20}$/.test(cleaned)) {
+    showToast('请输入 2~20 位有效昵称（仅支持中英文、数字、_-）')
     return
   }
-  savingPhone.value = true
+  savingNickname.value = true
   try {
-    await store.bindPhone(cleaned)
-    showToast('手机号绑定已保存')
+    await store.bindNickname(cleaned)
+    showToast('昵称绑定已保存')
   } catch (err) {
     showToast(err.message || '保存失败')
   } finally {
-    savingPhone.value = false
+    savingNickname.value = false
   }
 }
 
-async function loadEnglishArchive() {
-  const query = enFilter.value ? `?grade_stage=${enFilter.value}` : ''
-  const data = await api.get(`/archive/english${query}`)
-  enArchive.history = data.history || []
-  enArchive.tiers = data.tiers || { level_1: [], level_2: [], level_3: [] }
+async function loadEnglishArchive(append = false) {
+  const params = new URLSearchParams({ limit: '30', offset: String(append ? enArchive.history.length : 0) })
+  if (enFilter.value) params.set('grade_stage', enFilter.value)
+  const data = await api.get(`/archive/english?${params.toString()}`)
+  const rows = data.history || []
+  enArchive.history = append ? [...enArchive.history, ...rows] : rows
+  enArchive.hasMore = Boolean(data.has_more)
+  // 词库清单始终保持全学段完整数据（若筛选了学段，则单独拉取全量 tiers）
+  if (!enFilter.value) {
+    enArchive.tiers = data.tiers || { level_1: [], level_2: [], level_3: [] }
+  } else if (!append) {
+    const allData = await api.get('/archive/english?limit=1&offset=0')
+    enArchive.tiers = allData.tiers || { level_1: [], level_2: [], level_3: [] }
+  }
 }
 
-async function loadMathArchive() {
-  const query = mathFilter.value ? `?grade=${mathFilter.value}` : ''
-  const data = await api.get(`/archive/math${query}`)
-  mathArchive.history = data.history || []
+async function loadMathArchive(append = false) {
+  const params = new URLSearchParams({ limit: '30', offset: String(append ? mathArchive.history.length : 0) })
+  if (mathFilter.value) params.set('grade', mathFilter.value)
+  const data = await api.get(`/archive/math?${params.toString()}`)
+  const rows = data.history || []
+  mathArchive.history = append ? [...mathArchive.history, ...rows] : rows
+  mathArchive.hasMore = Boolean(data.has_more)
   mathArchive.wrong_book = data.wrong_book || []
+}
+
+async function loadPointLedger(append = false) {
+  const offset = append ? ledgerState.items.length : 0
+  const data = await api.get(`/user/point-ledger?limit=30&offset=${offset}`)
+  const rows = data.items || []
+  ledgerState.items = append ? [...ledgerState.items, ...rows] : rows
+  ledgerState.hasMore = Boolean(data.has_more)
 }
 
 function stageLabel(code) {
@@ -344,7 +538,7 @@ function statusBadge(st) {
 }
 
 onMounted(async () => {
-  phoneInput.value = store.phone || ''
-  await Promise.all([loadEnglishArchive(), loadMathArchive()])
+  nicknameInput.value = store.nickname || ''
+  await Promise.all([loadEnglishArchive(), loadMathArchive(), loadPointLedger()])
 })
 </script>

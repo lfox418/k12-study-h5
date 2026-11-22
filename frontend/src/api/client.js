@@ -38,7 +38,9 @@ api.interceptors.response.use(
       window.dispatchEvent(new CustomEvent('k12:unauthorized'))
     }
     const detail = err?.response?.data?.detail || err.message || '网络请求失败'
-    return Promise.reject(new Error(detail))
+    const wrapped = new Error(detail)
+    wrapped.status = status
+    return Promise.reject(wrapped)
   }
 )
 
